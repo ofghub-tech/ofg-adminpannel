@@ -1,0 +1,31 @@
+name: admin_dashboard
+description: OFG Admin Dashboard
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  appwrite: ^13.0.0
+  minio: ^3.5.8
+  cupertino_icons: ^1.0.2
+  flutter_dotenv: ^5.1.0  # Allows reading .env files
+  video_player: ^2.10.1
+  chewie: ^1.13.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0
+
+dependency_overrides:
+  flutter_web_auth_2: ^4.1.0
+
+flutter:
+  uses-material-design: true
+  # IMPORTANT: This allows the app to read the file
+  assets:
+    - .env
