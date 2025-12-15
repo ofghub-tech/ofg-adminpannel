@@ -4,7 +4,7 @@ import '../services/appwrite_service.dart';
 import '../services/r2_service.dart';
 import '../widgets/video_card.dart';
 import 'login_screen.dart';
-import 'player_screen.dart'; // Import the player
+import 'player_screen.dart';
 
 class AdminScreen extends StatefulWidget {
   @override
@@ -25,7 +25,6 @@ class _AdminScreenState extends State<AdminScreen> {
   void initState() {
     super.initState();
     _loadData();
-    // Listen to search input changes
     _searchController.addListener(() {
       setState(() {
         _searchQuery = _searchController.text.toLowerCase();
@@ -34,7 +33,6 @@ class _AdminScreenState extends State<AdminScreen> {
     });
   }
 
-  // Filter the master list based on search text
   void _filterData() {
     if (_searchQuery.isEmpty) {
       _filteredVideos = List.from(_allVideos);
@@ -48,13 +46,11 @@ class _AdminScreenState extends State<AdminScreen> {
 
   Future<void> _loadData() async {
     if(_allVideos.isEmpty) setState(() => _isLoading = true);
-    
     List<VideoModel> data = await _dbService.getVideos();
-    
     if (mounted) {
       setState(() {
         _allVideos = data;
-        _filterData(); // Apply any existing search filter
+        _filterData();
         _isLoading = false;
       });
     }
@@ -67,55 +63,47 @@ class _AdminScreenState extends State<AdminScreen> {
     }
   }
 
-  // --- NEW: Play Logic ---
   Future<void> _handlePlay(VideoModel video) async {
-    // Show loading indicator briefly while fetching link
     showDialog(
       context: context, 
       barrierDismissible: false,
       builder: (c) => Center(child: CircularProgressIndicator())
     );
 
-    // 1. Get Secure URL from R2 (Valid for 1 hour)
     String? secureUrl = await _r2Service.getPresignedUrl(video.sourceFileId);
-    
-    // Close loading dialog
     if (mounted) Navigator.pop(context);
 
-    if (secureUrl != null) {
-      // 2. Navigate to Player
-      if (mounted) {
-        Navigator.push(
-          context, 
-          MaterialPageRoute(
-            builder: (_) => PlayerScreen(videoUrl: secureUrl, title: video.title)
-          )
-        );
-      }
-    } else {
+    if (secureUrl != null && mounted) {
+      Navigator.push(
+        context, 
+        MaterialPageRoute(
+          builder: (_) => PlayerScreen(videoUrl: secureUrl, title: video.title)
+        )
+      );
+    } else if (mounted) {
       _showSnack("Could not generate playback URL (File missing?)", Colors.red);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // Case-insensitive filtering for tabs
+    // 1. FILTER LISTS FOR 3 LAYERS
     var pendingList = _filteredVideos.where((v) => v.adminStatus.toLowerCase() == 'pending').toList();
+    var reviewedList = _filteredVideos.where((v) => v.adminStatus.toLowerCase() == 'reviewed').toList();
     var approvedList = _filteredVideos.where((v) => v.adminStatus.toLowerCase() == 'approved').toList();
     
     int selectedCount = approvedList.where((v) => v.isSelected).length;
 
     return DefaultTabController(
-      length: 2,
+      length: 3, // CHANGED TO 3 TABS
       child: Scaffold(
-        backgroundColor: Color(0xFFF5F5F7), // Light Gray SaaS background
+        backgroundColor: Color(0xFFF5F5F7),
         appBar: AppBar(
           title: Text("OFG Connects"),
           bottom: PreferredSize(
             preferredSize: Size.fromHeight(100),
             child: Column(
               children: [
-                // SEARCH BAR
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   child: TextField(
@@ -133,13 +121,13 @@ class _AdminScreenState extends State<AdminScreen> {
                     cursorColor: Colors.white,
                   ),
                 ),
-                // TABS
                 TabBar(
                   indicatorColor: Colors.white,
                   indicatorWeight: 3,
-                  labelStyle: TextStyle(fontWeight: FontWeight.bold),
+                  labelStyle: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
                   tabs: [
                     Tab(text: "INBOX (${pendingList.length})"),
+                    Tab(text: "REVIEW (${reviewedList.length})"), // NEW TAB
                     Tab(text: "LIBRARY (${approvedList.length})"),
                   ],
                 ),
@@ -155,15 +143,15 @@ class _AdminScreenState extends State<AdminScreen> {
             ? Center(child: CircularProgressIndicator()) 
             : TabBarView(
                 children: [
-                  _buildList(pendingList, isInbox: true),
-                  _buildList(approvedList, isInbox: false),
+                  _buildList(pendingList, showActions: true),  // Step 1
+                  _buildList(reviewedList, showActions: true), // Step 2
+                  _buildList(approvedList, showActions: false),// Final
                 ],
               ),
         
-        // Floating Action Button for Compression
         floatingActionButton: selectedCount > 0 
           ? FloatingActionButton.extended(
-              backgroundColor: Color(0xFF009688), // Teal
+              backgroundColor: Color(0xFF009688),
               icon: Icon(Icons.compress, color: Colors.white),
               label: Text("Compress $selectedCount", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
               onPressed: () => _triggerCompression(approvedList.where((v) => v.isSelected).toList()),
@@ -173,7 +161,7 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  Widget _buildList(List<VideoModel> list, {required bool isInbox}) {
+  Widget _buildList(List<VideoModel> list, {required bool showActions}) {
     if (list.isEmpty) {
       return Center(
         child: Column(
@@ -193,18 +181,17 @@ class _AdminScreenState extends State<AdminScreen> {
       itemBuilder: (ctx, i) {
         final video = list[i];
         
-        if (isInbox) {
-          // PENDING TAB: Show Actions (Approve/Delete)
+        if (showActions) {
+          // PENDING & REVIEW TABS: Show Actions
           return VideoCard(
             video: video,
             isSelectionMode: false,
             onApprove: () => _handleApprove(video),
             onDelete: () => _handleDelete(video),
-            onPlay: () => _handlePlay(video), // Tap thumbnail to play
+            onPlay: () => _handlePlay(video), 
           );
         } else {
           // APPROVED TAB: Show Checkboxes
-          // Only allow selection if status is 'waiting', not if already queued/done
           bool canSelect = video.compressionStatus.toLowerCase() == 'waiting';
           
           return VideoCard(
@@ -213,7 +200,7 @@ class _AdminScreenState extends State<AdminScreen> {
             onSelectionChanged: canSelect
                 ? (val) => setState(() => video.isSelected = val!)
                 : null,
-            onPlay: () => _handlePlay(video), // Tap thumbnail to play
+            onPlay: () => _handlePlay(video),
           );
         }
       },
@@ -223,8 +210,21 @@ class _AdminScreenState extends State<AdminScreen> {
   // --- ACTIONS ---
 
   Future<void> _handleApprove(VideoModel video) async {
-    await _dbService.updateStatus(video.id, {'adminStatus': 'Approved'});
-    _showSnack("Approved '${video.title}'", Colors.green);
+    // 2-LAYER LOGIC
+    String currentStatus = video.adminStatus.toLowerCase();
+    String nextStatus;
+    String message;
+
+    if (currentStatus == 'pending') {
+      nextStatus = 'reviewed';
+      message = "Moved '${video.title}' to Review (Step 1 Complete)";
+    } else {
+      nextStatus = 'Approved'; // Capitalized as per your original code
+      message = "Fully Approved '${video.title}'";
+    }
+
+    await _dbService.updateStatus(video.id, {'adminStatus': nextStatus});
+    _showSnack(message, Colors.green);
     _loadData(); 
   }
 
@@ -240,11 +240,9 @@ class _AdminScreenState extends State<AdminScreen> {
     
     if (!confirm) return;
 
-    // 1. Delete R2 File
     if (video.sourceFileId.isNotEmpty) {
       await _r2Service.deleteFile(video.sourceFileId);
     }
-    // 2. Delete Database Entry
     await _dbService.deleteDocument(video.id);
     
     _showSnack("Deleted '${video.title}'", Colors.grey[800]!);

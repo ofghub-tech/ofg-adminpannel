@@ -5,7 +5,6 @@ class VideoCard extends StatelessWidget {
   final VideoModel video;
   final VoidCallback? onApprove;
   final VoidCallback? onDelete;
-  // NEW: Callback to handle playing
   final VoidCallback? onPlay;
   final bool isSelectionMode;
   final ValueChanged<bool?>? onSelectionChanged;
@@ -15,7 +14,7 @@ class VideoCard extends StatelessWidget {
     required this.video,
     this.onApprove,
     this.onDelete,
-    this.onPlay, // NEW
+    this.onPlay,
     this.isSelectionMode = false,
     this.onSelectionChanged,
   }) : super(key: key);
@@ -26,16 +25,18 @@ class VideoCard extends StatelessWidget {
       margin: EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
-        // If in selection mode, toggle checkbox. If not, do nothing (thumbnail handles play)
-        onTap: isSelectionMode ? () => onSelectionChanged!(!video.isSelected) : null,
+        // CHANGED: If not in selection mode, onTap triggers Play
+        onTap: isSelectionMode 
+            ? () => onSelectionChanged!(!video.isSelected) 
+            : onPlay, 
         child: Padding(
           padding: EdgeInsets.all(12),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // THUMBNAIL (Clickable)
+              // THUMBNAIL
               GestureDetector(
-                onTap: onPlay, // Trigger Play
+                onTap: onPlay,
                 child: _buildThumbnail(),
               ),
               SizedBox(width: 16),
@@ -70,10 +71,19 @@ class VideoCard extends StatelessWidget {
                   children: [
                     if (onApprove != null)
                       IconButton(
-                        icon: Icon(Icons.check_circle, color: Colors.green[600]),
+                        // Dynamic Icon based on status
+                        icon: Icon(
+                          video.adminStatus.toLowerCase() == 'pending' 
+                              ? Icons.check // Step 1 Icon
+                              : Icons.check_circle, // Step 2 Icon
+                          color: video.adminStatus.toLowerCase() == 'pending' 
+                              ? Colors.blue 
+                              : Colors.green[600]
+                        ),
                         onPressed: onApprove,
                         constraints: BoxConstraints(),
                         padding: EdgeInsets.zero,
+                        tooltip: video.adminStatus.toLowerCase() == 'pending' ? 'Mark Reviewed' : 'Approve',
                       ),
                     SizedBox(height: 8),
                     IconButton(
@@ -114,7 +124,6 @@ class VideoCard extends StatelessWidget {
                 : Center(child: Icon(Icons.movie, color: Colors.grey[400])),
           ),
         ),
-        // Play Icon Overlay
         Container(
           decoration: BoxDecoration(
             color: Colors.black.withOpacity(0.4),
@@ -128,7 +137,6 @@ class VideoCard extends StatelessWidget {
   }
 
   Widget _buildStatusChip() {
-    // ... (Keep your existing status chip logic) ...
     Color color;
     String text;
     String status = video.adminStatus.toLowerCase();
@@ -137,6 +145,9 @@ class VideoCard extends StatelessWidget {
     if (status == 'pending') {
       color = Colors.orange.shade700;
       text = 'Review Needed';
+    } else if (status == 'reviewed') { // NEW STATUS
+      color = Colors.blue.shade700;
+      text = 'Reviewed';
     } else if (compression == 'done') {
       color = Colors.green.shade700;
       text = 'Live';

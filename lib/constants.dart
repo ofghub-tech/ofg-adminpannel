@@ -11,6 +11,6 @@ class AppConstants {
   static String get r2AccountId => dotenv.env['R2_ACCOUNT_ID'] ?? '';
   static String get r2AccessKey => dotenv.env['R2_ACCESS_KEY'] ?? '';
   static String get r2SecretKey => dotenv.env['R2_SECRET_KEY'] ?? '';
-  static String get r2BucketName => dotenv.env['R2_BUCKET_NAME'] ?? '';
+  static String get r2BucketName => dotenv.env['R2_BUCKET_ID'] ?? '';
   static String get r2EndpointUrl => dotenv.env['R2_ENDPOINT_URL'] ?? '';
 }
