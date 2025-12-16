@@ -4,7 +4,8 @@ class VideoModel {
   String thumbnailUrl;
   String adminStatus;        // 'pending', 'Approved'
   String compressionStatus;  // 'waiting', 'queued', 'processing', 'done'
-  String sourceFileId;       // R2 Filename
+  String sourceFileId;       // R2 Filename (Raw)
+  String videoUrl;           // Direct Playable URL (New)
   String username;
   bool isSelected;
 
@@ -15,6 +16,7 @@ class VideoModel {
     required this.adminStatus,
     required this.compressionStatus,
     required this.sourceFileId,
+    required this.videoUrl,
     required this.username,
     this.isSelected = false,
   });
@@ -27,6 +29,8 @@ class VideoModel {
       adminStatus: json['adminStatus'] ?? 'pending',
       compressionStatus: json['compressionStatus'] ?? 'waiting',
       sourceFileId: json['sourceFileId'] ?? '',
+      // FIX: Check for 'videoUrl' first, then 'url_4k', otherwise empty
+      videoUrl: json['videoUrl'] ?? json['url_4k'] ?? '',
       username: json['username'] ?? 'Unknown',
     );
   }

@@ -1,65 +1,69 @@
 import 'package:appwrite/appwrite.dart';
 import 'package:appwrite/models.dart';
 import '../constants.dart';
-import '../models/video_model.dart';
+import '../models/video_model.dart'; // <--- FIX: Moved to top
 
 class AppwriteService {
-  Client client = Client();
-  late Databases databases;
+  late Client client;
   late Account account;
+  late Databases databases;
 
   AppwriteService() {
-    client
-        .setEndpoint(AppConstants.endpoint)
-        .setProject(AppConstants.projectId);
-    databases = Databases(client);
+    client = Client()
+        .setEndpoint(AppConstants.appwriteEndpoint)
+        .setProject(AppConstants.appwriteProjectId);
+    
     account = Account(client);
+    databases = Databases(client);
   }
 
   // --- AUTH METHODS ---
 
-  // 1. Get Current User (The missing function!)
   Future<User?> getCurrentUser() async {
     try {
       return await account.get();
     } catch (e) {
-      return null; // No active session
+      return null;
     }
   }
 
-  // 2. Smart Login (Handles "Session already active" error)
-  Future<bool> login(String email, String password) async {
+  Future<String?> login(String email, String password) async {
     try {
-      // Attempt to create a session
-      await account.createEmailPasswordSession(email: email, password: password);
-      return true;
-    } on AppwriteException catch (e) {
-      // If session exists (Code 401), delete it and try again to verify password
-      if (e.code == 401 || (e.message != null && e.message!.contains('active'))) {
-        print("Session exists. Re-authenticating...");
-        try {
-          await account.deleteSession(sessionId: 'current');
-          await account.createEmailPasswordSession(email: email, password: password);
-          return true;
-        } catch (ex) {
-          print("Re-login failed: $ex");
-          return false;
-        }
+      // 1. Check if a session already exists
+      try {
+        await account.getSession(sessionId: 'current');
+        return null; // Already logged in, consider success
+      } catch (_) {
+        // No active session, proceed to create one
       }
-      print("Login Failed: ${e.message}");
-      return false;
+
+      // 2. Create new session
+      await account.createEmailPasswordSession(
+        email: email, 
+        password: password
+      );
+      return null; // Success
+
+    } on AppwriteException catch (e) {
+      // 3. Handle known Appwrite errors
+      if (e.code == 429) {
+        print("Rate Limit Hit: ${e.message}");
+        return "Too many login attempts. Please wait 15-60 minutes.";
+      } else if (e.code == 401) {
+        return "Invalid email or password.";
+      } else {
+        return "Login Error: ${e.message}";
+      }
     } catch (e) {
-      print("Unknown Error: $e");
-      return false;
+      return "An unexpected error occurred: $e";
     }
   }
 
-  // 3. Logout
   Future<void> logout() async {
     try {
       await account.deleteSession(sessionId: 'current');
     } catch (e) {
-      // Ignore if already logged out
+      print("Logout error: $e");
     }
   }
 
@@ -68,31 +72,39 @@ class AppwriteService {
   Future<List<VideoModel>> getVideos() async {
     try {
       DocumentList result = await databases.listDocuments(
-        databaseId: AppConstants.databaseId,
-        collectionId: AppConstants.collectionId,
-        queries: [Query.orderDesc('\$createdAt')] 
+        databaseId: AppConstants.appwriteDatabaseId,
+        collectionId: AppConstants.appwriteCollectionId,
       );
+
       return result.documents.map((doc) => VideoModel.fromJson(doc.data)).toList();
     } catch (e) {
-      print("Fetch Error: $e");
+      print("Error fetching videos: $e");
       return [];
     }
   }
 
-  Future<void> updateStatus(String docId, Map<String, dynamic> data) async {
-    await databases.updateDocument(
-      databaseId: AppConstants.databaseId,
-      collectionId: AppConstants.collectionId,
-      documentId: docId,
-      data: data,
-    );
+  Future<void> updateStatus(String documentId, Map<String, dynamic> data) async {
+    try {
+      await databases.updateDocument(
+        databaseId: AppConstants.appwriteDatabaseId,
+        collectionId: AppConstants.appwriteCollectionId,
+        documentId: documentId,
+        data: data,
+      );
+    } catch (e) {
+      print("Error updating status: $e");
+    }
   }
 
-  Future<void> deleteDocument(String docId) async {
-    await databases.deleteDocument(
-      databaseId: AppConstants.databaseId,
-      collectionId: AppConstants.collectionId,
-      documentId: docId,
-    );
+  Future<void> deleteDocument(String documentId) async {
+    try {
+      await databases.deleteDocument(
+        databaseId: AppConstants.appwriteDatabaseId,
+        collectionId: AppConstants.appwriteCollectionId,
+        documentId: documentId,
+      );
+    } catch (e) {
+      print("Error deleting document: $e");
+    }
   }
 }

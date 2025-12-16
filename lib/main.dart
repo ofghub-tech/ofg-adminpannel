@@ -4,7 +4,14 @@ import 'screens/login_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await dotenv.load(fileName: ".env");
+  
+  // Try to load .env, but don't crash if it fails (prevents blank screen)
+  try {
+    await dotenv.load(fileName: ".env");
+  } catch (e) {
+    print("Warning: .env file not found or could not be loaded: $e");
+  }
+
   runApp(OfgAdminApp());
 }
 
@@ -14,11 +21,12 @@ class OfgAdminApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'OFG Admin Console',
+      // Professional Slate & Navy Theme
       theme: ThemeData(
         useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFF8FAFC), // Slate 50 (Very light grey)
+        scaffoldBackgroundColor: const Color(0xFFF8FAFC), // Slate 50
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0F172A), // Slate 900 (Deep Navy)
+          seedColor: const Color(0xFF0F172A), // Slate 900 (Navy)
           primary: const Color(0xFF0F172A),
           secondary: const Color(0xFF3B82F6), // Blue 500
           surface: Colors.white,
@@ -41,7 +49,7 @@ class OfgAdminApp extends StatelessWidget {
           elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: Color(0xFFE2E8F0)), // Slate 200 border
+            side: const BorderSide(color: Color(0xFFE2E8F0)), // Slate 200
           ),
         ),
         inputDecorationTheme: InputDecorationTheme(

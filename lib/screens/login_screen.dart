@@ -38,17 +38,40 @@ class _LoginScreenState extends State<LoginScreen> {
   void _handleLogin() async {
     final email = _emailController.text.trim();
     final password = _passController.text.trim();
-    if (email.isEmpty || password.isEmpty) return;
+
+    if (email.isEmpty || password.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Please enter both email and password"))
+      );
+      return;
+    }
 
     setState(() => _isLoading = true);
-    bool success = await _auth.login(email, password);
+    
+    // Call the updated login method (returns String? error)
+    String? error = await _auth.login(email, password);
+    
     setState(() => _isLoading = false);
 
-    if (success) {
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => AdminScreen()));
+    if (error == null) {
+      // Success!
+      if (mounted) {
+        Navigator.pushReplacement(
+          context, 
+          MaterialPageRoute(builder: (_) => AdminScreen())
+        );
+      }
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Authentication Failed"), backgroundColor: Colors.red));
+      // Failure - Show the specific error (e.g., Rate Limit)
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error), 
+            backgroundColor: error.contains("wait") ? Colors.orange[800] : Colors.red,
+            duration: const Duration(seconds: 5),
+          )
+        );
+      }
     }
   }
 
