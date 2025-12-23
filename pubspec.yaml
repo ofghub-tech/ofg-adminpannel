@@ -31,6 +31,7 @@ flutter:
   uses-material-design: true
   assets:
     - .env
+    - bin/svt-vp9/ffmpeg.exe
 
 # --- ICON CONFIGURATION ---
 flutter_launcher_icons:
