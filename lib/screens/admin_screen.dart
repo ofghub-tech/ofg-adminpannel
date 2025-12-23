@@ -3,7 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart'; 
 import 'dart:async'; 
-import 'package:appwrite/appwrite.dart'; // Needed for RealtimeSubscription
+import 'package:appwrite/appwrite.dart';
 
 import '../models/video_model.dart';
 import '../services/appwrite_service.dart';
@@ -23,7 +23,7 @@ class _AdminScreenState extends State<AdminScreen> {
   final TextEditingController _searchController = TextEditingController();
   
   Timer? _debounce;
-  RealtimeSubscription? _subscription; // <--- NEW: To hold connection
+  RealtimeSubscription? _subscription;
   
   List<VideoModel> _videos = [];
   bool _isLoading = true;
@@ -37,45 +37,28 @@ class _AdminScreenState extends State<AdminScreen> {
   void initState() {
     super.initState();
     _loadData();
-    _subscribeToRealtime(); // <--- NEW: Start listening
+    _subscribeToRealtime();
     _searchController.addListener(_onSearchChanged);
   }
 
   @override
   void dispose() {
     _debounce?.cancel();
-    _subscription?.close(); // <--- NEW: Clean up connection
+    _subscription?.close();
     _searchController.dispose();
     super.dispose();
   }
 
-  // --- REALTIME NOTIFICATIONS ---
+  // --- REALTIME ---
   void _subscribeToRealtime() {
     try {
       _subscription = _dbService.subscribeToVideos();
       _subscription!.stream.listen((event) {
-        // Check if the event is a "create" event (new upload)
         if (event.events.any((e) => e.endsWith('.create'))) {
-          print("Realtime: New video detected!");
-          
           if (mounted) {
-            // 1. Show Notification
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Row(
-                  children: [
-                    Icon(Icons.video_library, color: Colors.white),
-                    SizedBox(width: 12),
-                    Text("New video uploaded! List updated."),
-                  ],
-                ),
-                backgroundColor: Color(0xFF0F172A),
-                duration: Duration(seconds: 4),
-                behavior: SnackBarBehavior.floating,
-              )
+              SnackBar(content: Text("New video uploaded! List updated."), backgroundColor: Color(0xFF0F172A))
             );
-
-            // 2. Auto-Refresh Data
             _loadData();
           }
         }
@@ -93,37 +76,30 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Future<void> _loadData({String? searchTerm}) async {
-    // Only show loading spinner on initial load to avoid flickering on auto-refresh
     if (_videos.isEmpty) setState(() => _isLoading = true);
-    
     List<VideoModel> data = await _dbService.getVideos(searchTerm: searchTerm);
+    if (mounted) setState(() { _videos = data; _isLoading = false; });
+  }
+
+  // --- ACTIONS ---
+  Future<void> _handleApprove(VideoModel video) async {
+    // 2-Layer Verification Logic
+    String currentStatus = video.adminStatus.toLowerCase();
+    String nextStatus;
     
-    if (mounted) {
-      setState(() {
-        _videos = data;
-        _isLoading = false;
-      });
+    if (currentStatus == 'pending') {
+      nextStatus = 'reviewed';
+    } else {
+      nextStatus = 'approved';
     }
-  }
 
-  // ... [Keep _handleEmail, _handleDelete, _handleApprove, _handlePlay methods exactly as before] ...
-  Future<void> _handleEmail(VideoModel video) async {
-    if (video.email.isEmpty) {
-      _showSnack("No email address found for this user", Colors.orange);
-      return;
+    bool success = await _dbService.updateStatus(video.id, {'adminStatus': nextStatus});
+    if (success) {
+      _showSnack("Updated status to $nextStatus", Colors.black87);
+      _loadData();
+    } else {
+      _showSnack("Update failed", Colors.red);
     }
-    final String subject = "Regarding your video submission: ${video.title}";
-    final String body = "Hello ${video.username},\n\nWe are reviewing your video titled '${video.title}'.\n\nRegards,\nAdmin Team";
-    final Uri emailUri = Uri(
-      scheme: 'mailto',
-      path: video.email,
-      query: _encodeQueryParameters({'subject': subject, 'body': body}),
-    );
-    try { await launchUrl(emailUri); } catch (e) { _showSnack("Could not launch email client: $e", Colors.red); }
-  }
-
-  String? _encodeQueryParameters(Map<String, String> params) {
-    return params.entries.map((e) => '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}').join('&');
   }
 
   Future<void> _handleDelete(VideoModel video) async {
@@ -151,21 +127,47 @@ class _AdminScreenState extends State<AdminScreen> {
     }
   }
 
-  Future<void> _handleApprove(VideoModel video) async {
-    String currentStatus = video.adminStatus.toLowerCase();
-    String nextStatus = (currentStatus == 'pending') ? 'reviewed' : 'approved';
-    bool success = await _dbService.updateStatus(video.id, {'adminStatus': nextStatus});
-    if (success) {
-      _showSnack("Status updated to $nextStatus", Colors.black87);
-      _loadData();
+  Future<void> _handleEmail(VideoModel video) async {
+    if (video.email.isEmpty) return;
+    final Uri emailUri = Uri(
+      scheme: 'mailto',
+      path: video.email,
+      query: 'subject=${Uri.encodeComponent("Regarding: ${video.title}")}&body=${Uri.encodeComponent("Hello ${video.username},")}',
+    );
+    try { await launchUrl(emailUri); } catch (e) { _showSnack("Could not launch email", Colors.red); }
+  }
+
+  Future<void> _handlePlay(VideoModel video) async {
+    String? playUrl = video.videoUrl.isNotEmpty 
+        ? video.videoUrl 
+        : await _r2Service.getPresignedUrl(video.sourceFileId);
+
+    if (playUrl != null) {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => PlayerScreen(videoUrl: playUrl, title: video.title)));
     } else {
-      _showSnack("Update failed", Colors.red);
+      _showSnack("No playable URL found", Colors.red);
     }
   }
-  // ... [End of existing methods] ...
 
+  Future<void> _triggerCompression(List<VideoModel> videos) async {
+    var futures = videos.map((v) => _dbService.updateStatus(v.id, {'compressionStatus': 'queued'}));
+    await Future.wait(futures);
+    _showSnack("Queued ${videos.length} videos", Colors.blueAccent);
+    setState(() { for (var v in videos) v.isSelected = false; });
+    _loadData();
+  }
+
+  void _showSnack(String msg, Color color) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg), backgroundColor: color, behavior: SnackBarBehavior.floating,
+    ));
+  }
+
+  // --- UI ---
   @override
   Widget build(BuildContext context) {
+    // Filter videos into 3 lists
     var pendingList = _videos.where((v) => v.adminStatus.toLowerCase() == 'pending').toList();
     var reviewedList = _videos.where((v) => v.adminStatus.toLowerCase() == 'reviewed').toList();
     var approvedList = _videos.where((v) => v.adminStatus.toLowerCase() == 'approved').toList();
@@ -173,17 +175,10 @@ class _AdminScreenState extends State<AdminScreen> {
     int selectedCount = approvedList.where((v) => v.isSelected).length;
 
     return DefaultTabController(
-      length: 3,
+      length: 3, // 3 Tabs
       child: Scaffold(
         appBar: AppBar(
-          title: Text("Connects Admin"),
-          actions: [
-            IconButton(icon: Icon(Icons.refresh), onPressed: () => _loadData()),
-            IconButton(icon: Icon(Icons.logout), onPressed: () async {
-              await _dbService.logout();
-              Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => LoginScreen()));
-            }),
-          ],
+          title: Text("OFG Connector"),
           bottom: PreferredSize(
             preferredSize: Size.fromHeight(110),
             child: Container(
@@ -219,6 +214,13 @@ class _AdminScreenState extends State<AdminScreen> {
               ),
             ),
           ),
+          actions: [
+            IconButton(icon: Icon(Icons.refresh), onPressed: () => _loadData()),
+            IconButton(icon: Icon(Icons.logout), onPressed: () async {
+              await _dbService.logout();
+              Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => LoginScreen()));
+            }),
+          ],
         ),
         body: TabBarView(
           children: [
@@ -240,12 +242,11 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Widget _buildList(List<VideoModel> list, {required bool showActions, bool isLibrary = false}) {
-    // FIX: Always return a RefreshIndicator, even if empty, so you can pull to refresh even on empty screens
-    Widget content;
     if (list.isEmpty) {
-      content = Center(
+      return RefreshIndicator(
+        onRefresh: () async => await _loadData(),
         child: SingleChildScrollView(
-          physics: AlwaysScrollableScrollPhysics(), // Ensures pull-to-refresh works on empty list
+          physics: AlwaysScrollableScrollPhysics(),
           child: Container(
             height: MediaQuery.of(context).size.height * 0.7,
             alignment: Alignment.center,
@@ -253,8 +254,11 @@ class _AdminScreenState extends State<AdminScreen> {
           ),
         ),
       );
-    } else {
-      content = ListView.separated(
+    }
+
+    return RefreshIndicator(
+      onRefresh: () async => await _loadData(),
+      child: ListView.separated(
         padding: EdgeInsets.all(16),
         itemCount: list.length,
         separatorBuilder: (ctx, i) => SizedBox(height: 12),
@@ -274,46 +278,7 @@ class _AdminScreenState extends State<AdminScreen> {
             onPlay: () => _handlePlay(video),
           );
         },
-      );
-    }
-
-    // <--- NEW: Pull to Refresh Wrapper
-    return RefreshIndicator(
-      onRefresh: () async {
-        await _loadData(searchTerm: _searchController.text);
-      },
-      child: content,
+      ),
     );
-  }
-
-  // --- UTILS ---
-  Future<void> _handlePlay(VideoModel video) async {
-    String? playUrl = video.videoUrl.isNotEmpty 
-        ? video.videoUrl 
-        : await _r2Service.getPresignedUrl(video.sourceFileId);
-
-    if (playUrl != null) {
-      Navigator.push(context, MaterialPageRoute(builder: (_) => PlayerScreen(videoUrl: playUrl, title: video.title)));
-    } else {
-      _showSnack("No playable URL found", Colors.red);
-    }
-  }
-
-  Future<void> _triggerCompression(List<VideoModel> videos) async {
-    var futures = videos.map((v) => _dbService.updateStatus(v.id, {'compressionStatus': 'queued'}));
-    await Future.wait(futures);
-    _showSnack("Queued ${videos.length} videos", Colors.blueAccent);
-    setState(() { for (var v in videos) v.isSelected = false; });
-    _loadData();
-  }
-
-  void _showSnack(String msg, Color color) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(msg),
-      backgroundColor: color,
-      behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-    ));
   }
 }

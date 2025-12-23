@@ -66,15 +66,11 @@ class AppwriteService {
         Query.orderDesc('\$createdAt'), 
       ];
 
-      // LOGIC CHANGE:
       if (searchTerm != null && searchTerm.isNotEmpty) {
-        // 1. Search Mode: Search EVERYWHERE (ignore status)
         queries.add(Query.search('title', searchTerm));
-      } else {
-        // 2. Default Mode: Fetch ONLY 'pending' videos
-        // This hides 'approved' and 'reviewed' videos from the initial load
-        queries.add(Query.equal('adminStatus', 'pending'));
-      }
+      } 
+      // FIXED: Removed the 'else' block that forced 'adminStatus == pending'.
+      // Now it fetches ALL videos, allowing the tabs to sort them locally.
 
       DocumentList result = await databases.listDocuments(
         databaseId: AppConstants.appwriteDatabaseId,

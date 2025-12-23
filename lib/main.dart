@@ -20,7 +20,7 @@ class OfgAdminApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'OFG Admin Console',
+      title: 'OFG Connector',
       // Professional Slate & Navy Theme
       theme: ThemeData(
         useMaterial3: true,
