@@ -8,6 +8,7 @@ class VideoCard extends StatelessWidget {
   final VoidCallback? onApprove;
   final VoidCallback? onDelete;
   final VoidCallback? onPlay;
+  final VoidCallback? onEmail; // <--- NEW: Email callback
   final ValueChanged<bool?>? onSelectionChanged;
 
   const VideoCard({
@@ -18,6 +19,7 @@ class VideoCard extends StatelessWidget {
     this.onApprove,
     this.onDelete,
     this.onPlay,
+    this.onEmail,
     this.onSelectionChanged,
   }) : super(key: key);
 
@@ -31,8 +33,6 @@ class VideoCard extends StatelessWidget {
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        // LOGIC: If selection mode is on, clicking the card body selects/deselects.
-        // Otherwise, it plays the video.
         onTap: isSelectionMode 
             ? () { if (onSelectionChanged != null) onSelectionChanged!(!video.isSelected); }
             : onPlay,
@@ -40,9 +40,9 @@ class VideoCard extends StatelessWidget {
           padding: const EdgeInsets.all(12),
           child: Row(
             children: [
-              // --- THUMBNAIL (ALWAYS PLAYABLE) ---
+              // THUMBNAIL
               GestureDetector(
-                onTap: onPlay, // <--- IMPORTANT: Thumbnail tap always plays!
+                onTap: onPlay,
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(8),
                   child: Container(
@@ -88,7 +88,7 @@ class VideoCard extends StatelessWidget {
                 ),
               ),
 
-              // ACTIONS or CHECKBOX
+              // ACTIONS
               if (isSelectionMode)
                 Checkbox(
                   value: video.isSelected,
@@ -97,16 +97,27 @@ class VideoCard extends StatelessWidget {
                 )
               else if (showActions)
                 Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
+                    // MAIL BUTTON
+                    IconButton(
+                      icon: const Icon(Icons.mail_outline, color: Colors.blueGrey),
+                      tooltip: 'Email User',
+                      onPressed: onEmail,
+                    ),
+                    // APPROVE BUTTON
                     IconButton(
                       icon: Icon(
                         video.adminStatus.toLowerCase() == 'pending' ? Icons.check_circle_outline : Icons.done_all,
                         color: Colors.green,
                       ),
+                      tooltip: 'Approve',
                       onPressed: onApprove,
                     ),
+                    // DELETE BUTTON
                     IconButton(
                       icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                      tooltip: 'Delete',
                       onPressed: onDelete,
                     ),
                   ],
@@ -122,25 +133,23 @@ class VideoCard extends StatelessWidget {
     Color bg;
     Color text;
     String label = video.adminStatus;
-    // Normalize status strings
     String status = label.toLowerCase();
     String compression = video.compressionStatus.toLowerCase();
 
     if (status == 'pending') {
-      bg = const Color(0xFFFFF7ED); // Orange
+      bg = const Color(0xFFFFF7ED); 
       text = const Color(0xFFC2410C);
     } else if (status == 'reviewed') {
-      bg = const Color(0xFFEFF6FF); // Blue
+      bg = const Color(0xFFEFF6FF); 
       text = const Color(0xFF1D4ED8);
     } else {
-      bg = const Color(0xFFF0FDF4); // Green
+      bg = const Color(0xFFF0FDF4); 
       text = const Color(0xFF15803D);
     }
 
-    // Override label if compression is queued or processing
     if (status == 'approved' && (compression == 'queued' || compression == 'processing')) {
       label = "Processing...";
-      bg = const Color(0xFFFAF5FF); // Purple
+      bg = const Color(0xFFFAF5FF); 
       text = const Color(0xFF7E22CE);
     }
 

@@ -1,12 +1,13 @@
 import 'package:appwrite/appwrite.dart';
 import 'package:appwrite/models.dart';
 import '../constants.dart';
-import '../models/video_model.dart'; // <--- FIX: Moved to top
+import '../models/video_model.dart';
 
 class AppwriteService {
   late Client client;
   late Account account;
   late Databases databases;
+  late Realtime realtime;
 
   AppwriteService() {
     client = Client()
@@ -15,10 +16,10 @@ class AppwriteService {
     
     account = Account(client);
     databases = Databases(client);
+    realtime = Realtime(client);
   }
 
   // --- AUTH METHODS ---
-
   Future<User?> getCurrentUser() async {
     try {
       return await account.get();
@@ -29,33 +30,22 @@ class AppwriteService {
 
   Future<String?> login(String email, String password) async {
     try {
-      // 1. Check if a session already exists
       try {
         await account.getSession(sessionId: 'current');
-        return null; // Already logged in, consider success
-      } catch (_) {
-        // No active session, proceed to create one
-      }
+        return null; 
+      } catch (_) {}
 
-      // 2. Create new session
       await account.createEmailPasswordSession(
         email: email, 
         password: password
       );
-      return null; // Success
-
+      return null;
     } on AppwriteException catch (e) {
-      // 3. Handle known Appwrite errors
-      if (e.code == 429) {
-        print("Rate Limit Hit: ${e.message}");
-        return "Too many login attempts. Please wait 15-60 minutes.";
-      } else if (e.code == 401) {
-        return "Invalid email or password.";
-      } else {
-        return "Login Error: ${e.message}";
-      }
+      if (e.code == 429) return "Too many attempts. Wait 15m.";
+      if (e.code == 401) return "Invalid credentials.";
+      return "Login Error: ${e.message}";
     } catch (e) {
-      return "An unexpected error occurred: $e";
+      return "Error: $e";
     }
   }
 
@@ -69,11 +59,27 @@ class AppwriteService {
 
   // --- DATABASE METHODS ---
 
-  Future<List<VideoModel>> getVideos() async {
+  Future<List<VideoModel>> getVideos({String? searchTerm}) async {
     try {
+      List<String> queries = [
+        Query.limit(100),              
+        Query.orderDesc('\$createdAt'), 
+      ];
+
+      // LOGIC CHANGE:
+      if (searchTerm != null && searchTerm.isNotEmpty) {
+        // 1. Search Mode: Search EVERYWHERE (ignore status)
+        queries.add(Query.search('title', searchTerm));
+      } else {
+        // 2. Default Mode: Fetch ONLY 'pending' videos
+        // This hides 'approved' and 'reviewed' videos from the initial load
+        queries.add(Query.equal('adminStatus', 'pending'));
+      }
+
       DocumentList result = await databases.listDocuments(
         databaseId: AppConstants.appwriteDatabaseId,
         collectionId: AppConstants.appwriteCollectionId,
+        queries: queries,
       );
 
       return result.documents.map((doc) => VideoModel.fromJson(doc.data)).toList();
@@ -83,7 +89,7 @@ class AppwriteService {
     }
   }
 
-  Future<void> updateStatus(String documentId, Map<String, dynamic> data) async {
+  Future<bool> updateStatus(String documentId, Map<String, dynamic> data) async {
     try {
       await databases.updateDocument(
         databaseId: AppConstants.appwriteDatabaseId,
@@ -91,20 +97,31 @@ class AppwriteService {
         documentId: documentId,
         data: data,
       );
+      return true;
     } catch (e) {
       print("Error updating status: $e");
+      return false;
     }
   }
 
-  Future<void> deleteDocument(String documentId) async {
+  Future<bool> deleteDocument(String documentId) async {
     try {
       await databases.deleteDocument(
         databaseId: AppConstants.appwriteDatabaseId,
         collectionId: AppConstants.appwriteCollectionId,
         documentId: documentId,
       );
+      return true;
     } catch (e) {
       print("Error deleting document: $e");
+      return false;
     }
+  }
+
+  // --- REALTIME ---
+  RealtimeSubscription subscribeToVideos() {
+    return realtime.subscribe([
+      'databases.${AppConstants.appwriteDatabaseId}.collections.${AppConstants.appwriteCollectionId}.documents'
+    ]);
   }
 }

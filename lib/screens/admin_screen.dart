@@ -1,6 +1,10 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart'; 
+import 'dart:async'; 
+import 'package:appwrite/appwrite.dart'; // Needed for RealtimeSubscription
+
 import '../models/video_model.dart';
 import '../services/appwrite_service.dart';
 import '../services/r2_service.dart';
@@ -18,12 +22,12 @@ class _AdminScreenState extends State<AdminScreen> {
   final R2Service _r2Service = R2Service();
   final TextEditingController _searchController = TextEditingController();
   
-  List<VideoModel> _allVideos = [];
-  List<VideoModel> _filteredVideos = [];
+  Timer? _debounce;
+  RealtimeSubscription? _subscription; // <--- NEW: To hold connection
+  
+  List<VideoModel> _videos = [];
   bool _isLoading = true;
-  String _searchQuery = "";
 
-  // PLATFORM CHECK
   bool get _isDesktop {
     if (kIsWeb) return false;
     return Platform.isWindows || Platform.isLinux || Platform.isMacOS;
@@ -33,83 +37,138 @@ class _AdminScreenState extends State<AdminScreen> {
   void initState() {
     super.initState();
     _loadData();
-    _searchController.addListener(() {
-      setState(() {
-        _searchQuery = _searchController.text.toLowerCase();
-        _filterData();
-      });
-    });
+    _subscribeToRealtime(); // <--- NEW: Start listening
+    _searchController.addListener(_onSearchChanged);
   }
 
-  void _filterData() {
-    if (_searchQuery.isEmpty) {
-      _filteredVideos = List.from(_allVideos);
-    } else {
-      _filteredVideos = _allVideos.where((v) {
-        return v.title.toLowerCase().contains(_searchQuery) || 
-               v.username.toLowerCase().contains(_searchQuery);
-      }).toList();
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _subscription?.close(); // <--- NEW: Clean up connection
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  // --- REALTIME NOTIFICATIONS ---
+  void _subscribeToRealtime() {
+    try {
+      _subscription = _dbService.subscribeToVideos();
+      _subscription!.stream.listen((event) {
+        // Check if the event is a "create" event (new upload)
+        if (event.events.any((e) => e.endsWith('.create'))) {
+          print("Realtime: New video detected!");
+          
+          if (mounted) {
+            // 1. Show Notification
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Row(
+                  children: [
+                    Icon(Icons.video_library, color: Colors.white),
+                    SizedBox(width: 12),
+                    Text("New video uploaded! List updated."),
+                  ],
+                ),
+                backgroundColor: Color(0xFF0F172A),
+                duration: Duration(seconds: 4),
+                behavior: SnackBarBehavior.floating,
+              )
+            );
+
+            // 2. Auto-Refresh Data
+            _loadData();
+          }
+        }
+      });
+    } catch (e) {
+      print("Realtime Error: $e");
     }
   }
 
-  Future<void> _loadData() async {
-    if(_allVideos.isEmpty) setState(() => _isLoading = true);
-    List<VideoModel> data = await _dbService.getVideos();
+  void _onSearchChanged() {
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    _debounce = Timer(const Duration(milliseconds: 500), () {
+      _loadData(searchTerm: _searchController.text);
+    });
+  }
+
+  Future<void> _loadData({String? searchTerm}) async {
+    // Only show loading spinner on initial load to avoid flickering on auto-refresh
+    if (_videos.isEmpty) setState(() => _isLoading = true);
+    
+    List<VideoModel> data = await _dbService.getVideos(searchTerm: searchTerm);
+    
     if (mounted) {
       setState(() {
-        _allVideos = data;
-        _filterData();
+        _videos = data;
         _isLoading = false;
       });
     }
   }
 
-  Future<void> _handleLogout() async {
-    await _dbService.logout();
-    if (mounted) {
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => LoginScreen()));
+  // ... [Keep _handleEmail, _handleDelete, _handleApprove, _handlePlay methods exactly as before] ...
+  Future<void> _handleEmail(VideoModel video) async {
+    if (video.email.isEmpty) {
+      _showSnack("No email address found for this user", Colors.orange);
+      return;
     }
-  }
-
-  Future<void> _handlePlay(VideoModel video) async {
-    showDialog(
-      context: context, 
-      barrierDismissible: false,
-      builder: (c) => Center(child: CircularProgressIndicator())
+    final String subject = "Regarding your video submission: ${video.title}";
+    final String body = "Hello ${video.username},\n\nWe are reviewing your video titled '${video.title}'.\n\nRegards,\nAdmin Team";
+    final Uri emailUri = Uri(
+      scheme: 'mailto',
+      path: video.email,
+      query: _encodeQueryParameters({'subject': subject, 'body': body}),
     );
+    try { await launchUrl(emailUri); } catch (e) { _showSnack("Could not launch email client: $e", Colors.red); }
+  }
 
-    String? playUrl;
+  String? _encodeQueryParameters(Map<String, String> params) {
+    return params.entries.map((e) => '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}').join('&');
+  }
 
-    // FIX: Check for Direct URL first (New Logic)
-    if (video.videoUrl.isNotEmpty) {
-      playUrl = video.videoUrl;
-      print("Playing via Direct URL: $playUrl");
-    } 
-    // Fallback to R2 Presigned URL (Old Logic)
-    else if (video.sourceFileId.isNotEmpty) {
-      playUrl = await _r2Service.getPresignedUrl(video.sourceFileId);
-      print("Playing via R2 Generated URL: $playUrl");
-    }
+  Future<void> _handleDelete(VideoModel video) async {
+    bool confirm = await showDialog(context: context, builder: (c) => AlertDialog(
+      title: Text("Delete '${video.title}'?"),
+      content: Text("This will permanently remove the video record and files."),
+      actions: [
+        TextButton(onPressed:()=>Navigator.pop(c,false),child:Text("Cancel")),
+        TextButton(onPressed:()=>Navigator.pop(c,true),child:Text("Delete Forever", style: TextStyle(color:Colors.red))),
+      ],
+    )) ?? false;
+    
+    if (!confirm) return;
 
-    if (mounted) Navigator.pop(context);
-
-    if (playUrl != null && playUrl.isNotEmpty && mounted) {
-      Navigator.push(
-        context, 
-        MaterialPageRoute(
-          builder: (_) => PlayerScreen(videoUrl: playUrl!, title: video.title)
-        )
-      );
-    } else if (mounted) {
-      _showSnack("No playable URL found", Colors.red);
+    setState(() => _isLoading = true);
+    bool dbSuccess = await _dbService.deleteDocument(video.id);
+    
+    if (dbSuccess) {
+      if (video.sourceFileId.isNotEmpty) await _r2Service.deleteFile(video.sourceFileId);
+      _showSnack("Deleted successfully", Colors.black87);
+      _loadData();
+    } else {
+      setState(() => _isLoading = false);
+      _showSnack("Failed to delete video record", Colors.red);
     }
   }
+
+  Future<void> _handleApprove(VideoModel video) async {
+    String currentStatus = video.adminStatus.toLowerCase();
+    String nextStatus = (currentStatus == 'pending') ? 'reviewed' : 'approved';
+    bool success = await _dbService.updateStatus(video.id, {'adminStatus': nextStatus});
+    if (success) {
+      _showSnack("Status updated to $nextStatus", Colors.black87);
+      _loadData();
+    } else {
+      _showSnack("Update failed", Colors.red);
+    }
+  }
+  // ... [End of existing methods] ...
 
   @override
   Widget build(BuildContext context) {
-    var pendingList = _filteredVideos.where((v) => v.adminStatus.toLowerCase() == 'pending').toList();
-    var reviewedList = _filteredVideos.where((v) => v.adminStatus.toLowerCase() == 'reviewed').toList();
-    var approvedList = _filteredVideos.where((v) => v.adminStatus.toLowerCase() == 'approved').toList();
+    var pendingList = _videos.where((v) => v.adminStatus.toLowerCase() == 'pending').toList();
+    var reviewedList = _videos.where((v) => v.adminStatus.toLowerCase() == 'reviewed').toList();
+    var approvedList = _videos.where((v) => v.adminStatus.toLowerCase() == 'approved').toList();
     
     int selectedCount = approvedList.where((v) => v.isSelected).length;
 
@@ -119,8 +178,11 @@ class _AdminScreenState extends State<AdminScreen> {
         appBar: AppBar(
           title: Text("Connects Admin"),
           actions: [
-            IconButton(icon: Icon(Icons.refresh), onPressed: _loadData),
-            IconButton(icon: Icon(Icons.logout), onPressed: _handleLogout),
+            IconButton(icon: Icon(Icons.refresh), onPressed: () => _loadData()),
+            IconButton(icon: Icon(Icons.logout), onPressed: () async {
+              await _dbService.logout();
+              Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => LoginScreen()));
+            }),
           ],
           bottom: PreferredSize(
             preferredSize: Size.fromHeight(110),
@@ -133,8 +195,9 @@ class _AdminScreenState extends State<AdminScreen> {
                     child: TextField(
                       controller: _searchController,
                       decoration: InputDecoration(
-                        hintText: "Search title or user...",
+                        hintText: "Search server for title...",
                         prefixIcon: Icon(Icons.search, color: Colors.grey),
+                        suffixIcon: _isLoading ? Container(width: 12, height: 12, margin: EdgeInsets.all(12), child: CircularProgressIndicator(strokeWidth: 2)) : null,
                         filled: true,
                         fillColor: Color(0xFFF1F5F9),
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
@@ -157,17 +220,13 @@ class _AdminScreenState extends State<AdminScreen> {
             ),
           ),
         ),
-        body: _isLoading 
-            ? Center(child: CircularProgressIndicator()) 
-            : TabBarView(
-                children: [
-                  _buildList(pendingList, showActions: true),
-                  _buildList(reviewedList, showActions: true),
-                  _buildList(approvedList, showActions: false, isLibrary: true),
-                ],
-              ),
-        
-        // Show Compress button ONLY if Desktop AND items selected
+        body: TabBarView(
+          children: [
+            _buildList(pendingList, showActions: true),
+            _buildList(reviewedList, showActions: true),
+            _buildList(approvedList, showActions: false, isLibrary: true),
+          ],
+        ),
         floatingActionButton: (_isDesktop && selectedCount > 0)
           ? FloatingActionButton.extended(
               backgroundColor: Color(0xFF0F172A),
@@ -181,82 +240,70 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Widget _buildList(List<VideoModel> list, {required bool showActions, bool isLibrary = false}) {
+    // FIX: Always return a RefreshIndicator, even if empty, so you can pull to refresh even on empty screens
+    Widget content;
     if (list.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.inbox_outlined, size: 64, color: Colors.grey[300]),
-            SizedBox(height: 16),
-            Text("No videos here", style: TextStyle(color: Colors.grey[500])),
-          ],
+      content = Center(
+        child: SingleChildScrollView(
+          physics: AlwaysScrollableScrollPhysics(), // Ensures pull-to-refresh works on empty list
+          child: Container(
+            height: MediaQuery.of(context).size.height * 0.7,
+            alignment: Alignment.center,
+            child: Text(_isLoading ? "Loading..." : "No videos found", style: TextStyle(color: Colors.grey[500])),
+          ),
         ),
+      );
+    } else {
+      content = ListView.separated(
+        padding: EdgeInsets.all(16),
+        itemCount: list.length,
+        separatorBuilder: (ctx, i) => SizedBox(height: 12),
+        itemBuilder: (ctx, i) {
+          final video = list[i];
+          bool showCheckbox = _isDesktop && isLibrary;
+          bool canSelect = video.compressionStatus.toLowerCase() == 'waiting';
+
+          return VideoCard(
+            video: video,
+            showActions: showActions,
+            isSelectionMode: showCheckbox,
+            onSelectionChanged: canSelect ? (val) => setState(() => video.isSelected = val!) : null,
+            onApprove: () => _handleApprove(video),
+            onDelete: () => _handleDelete(video),
+            onEmail: () => _handleEmail(video),
+            onPlay: () => _handlePlay(video),
+          );
+        },
       );
     }
 
-    return ListView.separated(
-      padding: EdgeInsets.all(16),
-      itemCount: list.length,
-      separatorBuilder: (ctx, i) => SizedBox(height: 12),
-      itemBuilder: (ctx, i) {
-        final video = list[i];
-        
-        // Logic: Show Checkbox ONLY if Desktop + Library Tab + Waiting status
-        bool showCheckbox = _isDesktop && isLibrary;
-        bool canSelect = video.compressionStatus.toLowerCase() == 'waiting';
-
-        return VideoCard(
-          video: video,
-          showActions: showActions,
-          isSelectionMode: showCheckbox,
-          onSelectionChanged: canSelect 
-              ? (val) => setState(() => video.isSelected = val!) 
-              : null,
-          onApprove: () => _handleApprove(video),
-          onDelete: () => _handleDelete(video),
-          onPlay: () => _handlePlay(video), 
-        );
+    // <--- NEW: Pull to Refresh Wrapper
+    return RefreshIndicator(
+      onRefresh: () async {
+        await _loadData(searchTerm: _searchController.text);
       },
+      child: content,
     );
   }
 
-  // --- ACTIONS ---
+  // --- UTILS ---
+  Future<void> _handlePlay(VideoModel video) async {
+    String? playUrl = video.videoUrl.isNotEmpty 
+        ? video.videoUrl 
+        : await _r2Service.getPresignedUrl(video.sourceFileId);
 
-  Future<void> _handleApprove(VideoModel video) async {
-    String currentStatus = video.adminStatus.toLowerCase();
-    String nextStatus = (currentStatus == 'pending') ? 'reviewed' : 'Approved';
-
-    await _dbService.updateStatus(video.id, {'adminStatus': nextStatus});
-    _showSnack("Status updated to $nextStatus", Colors.black87);
-    _loadData(); 
-  }
-
-  Future<void> _handleDelete(VideoModel video) async {
-    bool confirm = await showDialog(context: context, builder: (c) => AlertDialog(
-      title: Text("Delete Video?"),
-      content: Text("This will permanently remove the video."),
-      actions: [
-        TextButton(onPressed:()=>Navigator.pop(c,false),child:Text("Cancel")),
-        TextButton(onPressed:()=>Navigator.pop(c,true),child:Text("Delete", style: TextStyle(color:Colors.red))),
-      ],
-    )) ?? false;
-    
-    if (!confirm) return;
-
-    if (video.sourceFileId.isNotEmpty) {
-      await _r2Service.deleteFile(video.sourceFileId);
+    if (playUrl != null) {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => PlayerScreen(videoUrl: playUrl, title: video.title)));
+    } else {
+      _showSnack("No playable URL found", Colors.red);
     }
-    await _dbService.deleteDocument(video.id);
-    
-    _showSnack("Deleted '${video.title}'", Colors.black87);
-    _loadData();
   }
 
   Future<void> _triggerCompression(List<VideoModel> videos) async {
-    for (var v in videos) {
-      await _dbService.updateStatus(v.id, {'compressionStatus': 'queued'});
-    }
+    var futures = videos.map((v) => _dbService.updateStatus(v.id, {'compressionStatus': 'queued'}));
+    await Future.wait(futures);
     _showSnack("Queued ${videos.length} videos", Colors.blueAccent);
+    setState(() { for (var v in videos) v.isSelected = false; });
     _loadData();
   }
 

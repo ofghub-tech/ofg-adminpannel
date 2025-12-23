@@ -2,11 +2,12 @@ class VideoModel {
   String id;
   String title;
   String thumbnailUrl;
-  String adminStatus;        // 'pending', 'Approved'
+  String adminStatus;        // 'pending', 'reviewed', 'approved'
   String compressionStatus;  // 'waiting', 'queued', 'processing', 'done'
-  String sourceFileId;       // R2 Filename (Raw)
-  String videoUrl;           // Direct Playable URL (New)
+  String sourceFileId;       // R2 Filename
+  String videoUrl;           // Direct Playable URL
   String username;
+  String email;              // <--- NEW: User's email address
   bool isSelected;
 
   VideoModel({
@@ -18,6 +19,7 @@ class VideoModel {
     required this.sourceFileId,
     required this.videoUrl,
     required this.username,
+    required this.email,
     this.isSelected = false,
   });
 
@@ -29,9 +31,10 @@ class VideoModel {
       adminStatus: json['adminStatus'] ?? 'pending',
       compressionStatus: json['compressionStatus'] ?? 'waiting',
       sourceFileId: json['sourceFileId'] ?? '',
-      // FIX: Check for 'videoUrl' first, then 'url_4k', otherwise empty
       videoUrl: json['videoUrl'] ?? json['url_4k'] ?? '',
       username: json['username'] ?? 'Unknown',
+      // Ensure your Appwrite collection has an 'email' field, or this will be empty
+      email: json['email'] ?? '', 
     );
   }
 }
