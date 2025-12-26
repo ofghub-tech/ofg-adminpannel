@@ -1,18 +1,19 @@
+// lib/models/video_model.dart
+
 class VideoModel {
   final String id;
   final String title;
   final String description;
-  final String? videoUrl; // Nullable (might be deleted later)
+  final String? videoUrl; 
   final String thumbnailUrl;
   final String sourceFileId;
-  final String adminStatus; // 'pending', 'reviewed', 'approved'
+  final String adminStatus; // 'pending', 'approved'
+  final String compressionStatus; // 'waiting', 'done'
   
-  // --- UI & User Fields ---
   final String username;
   final String email;
-  final String compressionStatus; // 'waiting', 'queued', 'processing', 'done'
 
-  // --- Production Quality Fields ---
+  // Quality Variant URLs
   final String? url1080p;
   final String? url720p;
   final String? url480p;
@@ -28,12 +29,9 @@ class VideoModel {
     required this.thumbnailUrl,
     required this.sourceFileId,
     required this.adminStatus,
-    
-    // Defaults for safety
     this.username = 'Unknown',
     this.email = '',
     this.compressionStatus = 'waiting',
-    
     this.isSelected = false,
     this.url1080p,
     this.url720p,
@@ -47,16 +45,12 @@ class VideoModel {
       title: json['title'] ?? 'Untitled',
       description: json['description'] ?? '',
       videoUrl: json['videoUrl'], 
-      thumbnailUrl: json['thumbnailUrl'] != null ? json['thumbnailUrl'].toString() : '',
+      thumbnailUrl: json['thumbnailUrl']?.toString() ?? '',
       sourceFileId: json['sourceFileId'] ?? '',
       adminStatus: json['adminStatus'] ?? 'pending',
-      
-      // Map User Fields (Handle missing data gracefully)
       username: json['username'] ?? 'Unknown',
       email: json['email'] ?? '', 
       compressionStatus: json['compressionStatus'] ?? 'waiting',
-
-      // Map Quality Fields
       url1080p: json['url_1080p'],
       url720p: json['url_720p'],
       url480p: json['url_480p'],
@@ -72,8 +66,6 @@ class VideoModel {
       'thumbnailUrl': thumbnailUrl,
       'sourceFileId': sourceFileId,
       'adminStatus': adminStatus,
-      'username': username,
-      'email': email,
       'compressionStatus': compressionStatus,
       'url_1080p': url1080p,
       'url_720p': url720p,
