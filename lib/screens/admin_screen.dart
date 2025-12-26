@@ -2,8 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:appwrite/appwrite.dart';
+import 'package:appwrite/appwrite.dart'; 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -13,7 +12,6 @@ import '../services/r2_service.dart';
 import '../services/compression_service.dart';
 import '../services/download_service.dart';
 import '../widgets/video_card.dart';
-import '../constants.dart';
 import 'login_screen.dart';
 import 'player_screen.dart';
 
@@ -26,61 +24,51 @@ class _AdminScreenState extends State<AdminScreen> {
   final AppwriteService _dbService = AppwriteService();
   final R2Service _r2Service = R2Service();
   final DownloadService _downloadService = DownloadService();
-  final TextEditingController _searchController = TextEditingController();
   
-  Timer? _debounce;
-  RealtimeSubscription? _subscription;
-  List<VideoModel> _videos = [];
-  bool _isLoading = true;
-  bool _isProcessingBatch = false;
+  // ⚠️ IMPORTANT: REPLACE WITH YOUR REAL R2 PUBLIC DOMAIN
+  // Example: https://pub-123456789.r2.dev
+  final String _r2PublicDomain = "https://pub-xxxxxxxxxxxx.r2.dev"; 
 
+  bool _isProcessingBatch = false;
+  bool _isLoading = true;
+  List<VideoModel> _videos = [];
+  
+  // Progress UI Variables
   final ValueNotifier<double> _progressValue = ValueNotifier(0.0);
   final ValueNotifier<String> _progressLabel = ValueNotifier("Initializing...");
 
-  bool get _isDesktop {
-    if (kIsWeb) return false;
-    return Platform.isWindows || Platform.isLinux || Platform.isMacOS;
-  }
+  bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
   @override
   void initState() {
     super.initState();
     _loadData();
-    // _subscribeToRealtime(); // Disabled
-    _searchController.addListener(_onSearchChanged);
     _downloadService.prepareWorkspace();
   }
 
-  @override
-  void dispose() {
-    _debounce?.cancel();
-    _subscription?.close();
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  void _onSearchChanged() {
-    if (_debounce?.isActive ?? false) _debounce!.cancel();
-    _debounce = Timer(const Duration(milliseconds: 500), () {
-      _loadData(searchTerm: _searchController.text);
-    });
-  }
-
-  Future<void> _loadData({String? searchTerm}) async {
-    if (_videos.isEmpty) setState(() => _isLoading = true);
-    List<VideoModel> data = await _dbService.getVideos(searchTerm: searchTerm);
+  Future<void> _loadData() async {
+    if (mounted) setState(() => _isLoading = true);
+    // Fetch ALL videos (we will filter them by tab locally)
+    List<VideoModel> data = await _dbService.getVideos(); 
     if (mounted) setState(() { _videos = data; _isLoading = false; });
   }
 
+  // --- ACTIONS (Approve, Delete, Play) ---
+
   Future<void> _handleApprove(VideoModel video) async {
+    // Logic: Pending -> Reviewed -> Approved
     String nextStatus = video.adminStatus.toLowerCase() == 'pending' ? 'reviewed' : 'approved';
-    await _dbService.updateStatus(video.id, {'adminStatus': nextStatus});
+    
+    await _dbService.updateStatus(video.id, {
+      'adminStatus': nextStatus
+    });
     _loadData();
   }
 
   Future<void> _handleDelete(VideoModel video) async {
     bool confirm = await showDialog(context: context, builder: (c) => AlertDialog(
       title: Text("Delete '${video.title}'?"),
+      content: Text("This will permanently remove the video."),
       actions: [
         TextButton(onPressed:()=>Navigator.pop(c,false),child:Text("Cancel")),
         TextButton(onPressed:()=>Navigator.pop(c,true),child:Text("Delete", style: TextStyle(color:Colors.red))),
@@ -88,93 +76,56 @@ class _AdminScreenState extends State<AdminScreen> {
     )) ?? false;
     
     if (!confirm) return;
+
     if (await _dbService.deleteDocument(video.id)) {
-      if (video.sourceFileId.isNotEmpty) await _r2Service.deleteFile(video.sourceFileId);
+      // 1. Try to delete Raw File
+      if (video.sourceFileId.isNotEmpty) {
+        try { await _r2Service.deleteFile(video.sourceFileId); } catch(e) { print("R2 Delete Error: $e"); }
+      }
+      // 2. Try to delete Compressed Files (if they exist)
+      List<String> qualities = ['1080p', '720p', '480p', '360p'];
+      for (var q in qualities) {
+         try { await _r2Service.deleteFile("${video.id}_$q.webm"); } catch (_) {}
+      }
       _loadData();
     }
   }
 
   Future<void> _handlePlay(VideoModel video) async {
-    // UPDATED PLAY LOGIC: Priority to compressed URLs
-    String? playUrl = video.videoUrl;
-    
-    // Fallback: Presigned URL of best guess compressed
-    if ((playUrl == null || playUrl.isEmpty) && video.id.isNotEmpty) {
-       // Try 720p guess
-       String guess720 = "${video.id}_720p.webm";
-       playUrl = await _r2Service.getPresignedUrl(guess720);
+    String playUrl = "";
+
+    // 1. Try playing the 720p version (Best for preview)
+    if (video.url720p != null && video.url720p!.isNotEmpty) {
+      playUrl = video.url720p!;
     }
-    
-    // Fallback: Source File
-    if (playUrl == null || playUrl.isEmpty) {
-       playUrl = await _r2Service.getPresignedUrl(video.sourceFileId);
+    // 2. Fallback: Try the old/main videoUrl
+    else if (video.videoUrl != null && video.videoUrl!.isNotEmpty) {
+      playUrl = video.videoUrl!;
+    } 
+    // 3. Last Resort: Play Raw File (Needs Presigned URL because it is likely private)
+    else if (video.sourceFileId.isNotEmpty) {
+       _showSnack("⏳ Fetching raw preview...", Colors.blue);
+       
+       // FIXED: Added '?? ""' to handle nulls
+       playUrl = await _r2Service.getPresignedUrl(video.sourceFileId) ?? "";
     }
 
-    if (playUrl != null) {
-      Navigator.push(context, MaterialPageRoute(builder: (_) => PlayerScreen(videoUrl: playUrl!, title: video.title)));
+    if (playUrl.isNotEmpty) {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => PlayerScreen(
+        videoUrl: playUrl, 
+        title: video.title
+      )));
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("No playable URL found")));
+      _showSnack("❌ No playable URL found.", Colors.red);
     }
   }
 
-  void _showProgressDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return PopScope(
-          canPop: false,
-          child: AlertDialog(
-            backgroundColor: Colors.white,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            title: Row(
-              children: [
-                CircularProgressIndicator(strokeWidth: 3),
-                SizedBox(width: 15),
-                Text("Processing", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              ],
-            ),
-            content: Container(
-              height: 80,
-              width: 350,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  ValueListenableBuilder<String>(
-                    valueListenable: _progressLabel,
-                    builder: (context, value, _) => Text(
-                      value, 
-                      style: TextStyle(fontSize: 15, color: Colors.blueGrey[800], fontWeight: FontWeight.w500)
-                    ),
-                  ),
-                  SizedBox(height: 12),
-                  ValueListenableBuilder<double>(
-                    valueListenable: _progressValue,
-                    builder: (context, value, _) => LinearProgressIndicator(
-                      value: value > 0 ? value : null,
-                      backgroundColor: Colors.grey[200],
-                      color: Colors.blue[700],
-                      minHeight: 8,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  // --- COMPRESSION PIPELINE ---
+  // --- 🚀 PRODUCTION COMPRESSION ENGINE ---
   Future<void> _triggerCompression(List<VideoModel> videos) async {
     if (videos.isEmpty || _isProcessingBatch) return;
 
-    _isProcessingBatch = true;
+    setState(() { _isProcessingBatch = true; });
     _showProgressDialog(context);
-
     final compressionService = CompressionService();
 
     try {
@@ -182,102 +133,128 @@ class _AdminScreenState extends State<AdminScreen> {
         File? localRawFile;
         Map<String, String> localOutputs = {};
         
-        String r2RawKey = video.sourceFileId;
-        if (!r2RawKey.toLowerCase().endsWith('.mp4')) r2RawKey += ".mp4";
-
         try {
           // --- STEP 1: DOWNLOAD ---
-          _progressLabel.value = "Starting download...";
+          _progressLabel.value = "⬇️ Downloading ${video.title}...";
           _progressValue.value = 0.0;
-          await _dbService.updateStatus(video.id, {'compressionStatus': 'processing'});
-
+          
           localRawFile = await _downloadService.downloadVideo(
             video.sourceFileId, 
             video.title,
-            onProgress: (p) { 
-               _progressLabel.value = "Downloading: ${(p * 100).toInt()}%";
-               _progressValue.value = p * 0.20; 
-            }
+            onProgress: (p) => _progressValue.value = p * 0.15 
           );
           
           if (localRawFile == null) throw Exception("Download Failed");
 
           // --- STEP 2: COMPRESS ---
-          String workDir = localRawFile.parent.path;
+          _progressLabel.value = "⚙️ Encoding (VP9 Multi-Thread)...";
           localOutputs = await compressionService.processVideoMultiQuality(
             localRawFile.path, 
-            workDir,
+            localRawFile.parent.path,
             onStatus: (msg) => _progressLabel.value = msg,
-            onProgress: (val) => _progressValue.value = val
+            onProgress: (p) => _progressValue.value = 0.15 + (p * 0.60)
           );
-          
-          // --- STEP 3: UPLOAD ---
-          _progressLabel.value = "Uploading versions...";
-          _progressValue.value = 0.90; 
-          
-          Map<String, dynamic> updates = {'compressionStatus': 'done'};
-          int uploadCount = 0;
-          int totalUploads = localOutputs.length;
 
+          // --- STEP 3: UPLOAD & PREPARE DB UPDATE ---
+          _progressLabel.value = "☁️ Uploading Variants...";
+          
+          Map<String, dynamic> dbUpdates = {
+            'adminStatus': 'approved', 
+            'compressionStatus': 'done', // Ensure this column exists in Appwrite!
+            'videoUrl': null, // Clear the old raw link
+          };
+
+          int count = 0;
           for (var entry in localOutputs.entries) {
-             String quality = entry.key;
-             File f = File(entry.value);
-             String uploadKey = "${video.id}_$quality.webm";
+            String quality = entry.key; 
+            File file = File(entry.value);
+            String remoteName = "${video.id}_$quality.webm";
 
-             _progressLabel.value = "Uploading $quality...";
-             
-             if (await _r2Service.uploadFile(f, uploadKey) != null) {
-               updates['url_$quality'] = uploadKey;
-             }
-             
-             uploadCount++;
-             _progressValue.value = 0.90 + ((uploadCount / totalUploads) * 0.10);
+            await _r2Service.uploadFile(file, remoteName);
+            
+            // Construct Public URL
+            String publicUrl = "$_r2PublicDomain/$remoteName";
+            
+            if (quality == '1080p') dbUpdates['url_1080p'] = publicUrl;
+            if (quality == '720p') dbUpdates['url_720p'] = publicUrl;
+            if (quality == '480p') dbUpdates['url_480p'] = publicUrl;
+            if (quality == '360p') dbUpdates['url_360p'] = publicUrl;
+
+            count++;
+            _progressValue.value = 0.75 + ((0.20 / localOutputs.length) * count);
           }
 
-          // FIX: Use 'video_url' (snake_case) to match your database column!
-          if (updates.containsKey('url_720p')) {
-            updates['video_url'] = updates['url_720p'];
-          } else if (updates.containsKey('url_480p')) {
-            updates['video_url'] = updates['url_480p'];
+          // --- STEP 4: UPDATE DB (With Safety Check) ---
+          _progressLabel.value = "📝 Updating Database...";
+          
+          bool updated = await _dbService.updateStatus(video.id, dbUpdates);
+          
+          if (!updated) {
+            throw Exception("Database Update Failed! Check Appwrite attributes (compressionStatus, url_1080p, etc).");
           }
 
-          // --- STEP 4: UPDATE DB ---
-          _progressLabel.value = "Updating Database...";
-          // This will now SUCCEED because the key name is correct
-          await _dbService.updateStatus(video.id, updates);
+          // --- STEP 5: DELETE RAW (Only if DB update succeeded) ---
+          _progressLabel.value = "🗑️ Deleting Cloud Raw File...";
+          if (video.sourceFileId.isNotEmpty) {
+             await _r2Service.deleteFile(video.sourceFileId); 
+          }
 
-          // --- STEP 5: DELETE RAW FROM TEMP BUCKET ---
-          // This runs only if the DB update above succeeds
-          _progressLabel.value = "Deleting Temp File from Cloud...";
-          await _r2Service.deleteFile(
-            r2RawKey, 
-            bucketName: AppConstants.r2TempBucketName
-          );
-
-          _showSnack("✅ Success: ${video.title}", Colors.green);
+          _showSnack("✅ Live: ${video.title}", Colors.green);
 
         } catch (e) {
           print("Error: $e");
-          _progressLabel.value = "Error: $e";
-          await Future.delayed(Duration(seconds: 4));
-          // If error, mark as error so you know to retry
-          await _dbService.updateStatus(video.id, {'compressionStatus': 'error'});
+          _progressLabel.value = "❌ Error: $e";
+          // Pause so you can read the error
+          await Future.delayed(Duration(seconds: 6));
         } finally {
-           _progressLabel.value = "Cleaning local files...";
-           if (localRawFile != null) await _downloadService.deleteFile(localRawFile);
+           // --- STEP 6: CLEANUP LOCAL ---
+           if (localRawFile != null && await localRawFile.exists()) await localRawFile.delete();
            for (var path in localOutputs.values) {
-             await _downloadService.deleteFile(File(path));
+             if (await File(path).exists()) await File(path).delete();
            }
         }
       }
     } finally {
       if (mounted) {
         Navigator.of(context).pop(); 
-        _isProcessingBatch = false;
-        setState(() { for (var v in videos) v.isSelected = false; });
-        _loadData();
+        setState(() { _isProcessingBatch = false; });
+        _loadData(); // Refresh UI to show new status
       }
     }
+  }
+
+  void _showProgressDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: Container(
+            height: 100,
+            width: 300,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                ValueListenableBuilder<String>(
+                  valueListenable: _progressLabel,
+                  builder: (_, val, __) => Text(val, textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+                SizedBox(height: 15),
+                ValueListenableBuilder<double>(
+                  valueListenable: _progressValue,
+                  builder: (_, val, __) => LinearProgressIndicator(
+                    value: val > 0 ? val : null, 
+                    backgroundColor: Colors.grey[200],
+                    color: Colors.blue[800],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   void _showSnack(String msg, Color color) {
@@ -288,77 +265,83 @@ class _AdminScreenState extends State<AdminScreen> {
 
   @override
   Widget build(BuildContext context) {
-    var approvedList = _videos.where((v) => v.adminStatus.toLowerCase() == 'approved').toList();
-    int selectedCount = approvedList.where((v) => v.isSelected).length;
+    // Filter Lists for Tabs
+    var inboxList = _videos.where((v) => v.adminStatus.toLowerCase() == 'pending').toList();
+    var reviewList = _videos.where((v) => v.adminStatus.toLowerCase() == 'reviewed').toList();
+    var libraryList = _videos.where((v) => v.adminStatus.toLowerCase() == 'approved').toList();
+
+    // Count selected items in Review tab
+    int selectedCount = reviewList.where((v) => v.isSelected).length;
 
     return DefaultTabController(
       length: 3,
       child: Scaffold(
         appBar: AppBar(
-          title: Text("OFG Connector"),
+          title: Text("Admin Dashboard"),
           actions: [
-            if (_isDesktop)
-              IconButton(
-                tooltip: "Open Temp Folder",
-                icon: Icon(Icons.folder_open),
-                onPressed: () => _downloadService.openWorkerFolder(),
-              ),
-            IconButton(icon: Icon(Icons.refresh), onPressed: () => _loadData()),
+            IconButton(icon: Icon(Icons.refresh), onPressed: _loadData),
             IconButton(icon: Icon(Icons.logout), onPressed: () async {
               await _dbService.logout();
               Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => LoginScreen()));
             }),
           ],
-          bottom: PreferredSize(
-            preferredSize: Size.fromHeight(50),
-            child: TabBar(
-              labelColor: Colors.black,
-              tabs: [
-                Tab(text: "Inbox"),
-                Tab(text: "Review"),
-                Tab(text: "Library"), 
-              ],
-            ),
+          bottom: TabBar(
+            labelColor: Colors.blue[800],
+            unselectedLabelColor: Colors.grey,
+            tabs: [
+              Tab(text: "Inbox (${inboxList.length})"),
+              Tab(text: "Review (${reviewList.length})"),
+              Tab(text: "Library"),
+            ],
           ),
         ),
         body: TabBarView(
           children: [
-            _buildList(_videos.where((v) => v.adminStatus == 'pending').toList(), true),
-            _buildList(_videos.where((v) => v.adminStatus == 'reviewed').toList(), true),
-            _buildList(approvedList, false, isLibrary: true),
+            // TAB 1: INBOX (Action: Approve to move to Review)
+            _buildList(inboxList, isReviewTab: false),
+            
+            // TAB 2: REVIEW (Action: Select & Publish)
+            _buildList(reviewList, isReviewTab: true),
+            
+            // TAB 3: LIBRARY (Read Only / Delete)
+            _buildList(libraryList, isReviewTab: false),
           ],
         ),
-        floatingActionButton: (_isDesktop && selectedCount > 0)
+        floatingActionButton: (selectedCount > 0)
           ? FloatingActionButton.extended(
-              backgroundColor: Color(0xFF0F172A),
-              icon: Icon(Icons.compress, color: Colors.white),
-              label: Text("Compress $selectedCount", style: TextStyle(color: Colors.white)),
+              backgroundColor: Colors.blue[800],
+              icon: Icon(Icons.cloud_upload, color: Colors.white),
+              label: Text("Publish $selectedCount Videos", style: TextStyle(color: Colors.white)),
               onPressed: _isProcessingBatch 
                   ? null 
-                  : () => _triggerCompression(approvedList.where((v) => v.isSelected).toList()),
+                  : () => _triggerCompression(reviewList.where((v) => v.isSelected).toList()),
             )
           : null,
       ),
     );
   }
 
-  Widget _buildList(List<VideoModel> list, bool showActions, {bool isLibrary = false}) {
-    if (list.isEmpty) return Center(child: Text("No videos"));
+  Widget _buildList(List<VideoModel> list, {required bool isReviewTab}) {
+    if (_isLoading) return Center(child: CircularProgressIndicator());
+    if (list.isEmpty) return Center(child: Text("No videos found", style: TextStyle(color: Colors.grey)));
+
     return ListView.separated(
       padding: EdgeInsets.all(16),
       itemCount: list.length,
       separatorBuilder: (_,__) => SizedBox(height: 12),
       itemBuilder: (ctx, i) {
         final video = list[i];
-        bool showCheckbox = _isDesktop && isLibrary;
         return VideoCard(
           video: video,
-          showActions: showActions,
-          isSelectionMode: showCheckbox,
-          onSelectionChanged: showCheckbox ? (val) => setState(() => video.isSelected = val!) : null,
+          showActions: true,
+          // Only allow Selection Mode in the "Review" tab
+          isSelectionMode: isReviewTab, 
+          onSelectionChanged: isReviewTab 
+              ? (val) => setState(() => video.isSelected = val!) 
+              : null,
+          onPlay: () => _handlePlay(video),
           onApprove: () => _handleApprove(video),
           onDelete: () => _handleDelete(video),
-          onPlay: () => _handlePlay(video),
         );
       },
     );
